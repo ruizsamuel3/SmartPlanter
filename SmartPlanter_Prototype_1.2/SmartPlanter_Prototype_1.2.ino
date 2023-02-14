@@ -29,6 +29,10 @@
 #include "gort.h" // Image is stored here in an 8 bit array
 #include "logo.h"
 #include "devscreen.h"
+#include "temperature.h"
+#include "humidity.h"
+#include "light_exposure.h"
+#include "soil_moisture.h"
 #include "SPI.h" // SPI Library for LCD
 #include <TFT_eSPI.h>              // Hardware-specific library
 #include "NotoSansBold36.h"  //Text Style for LCD Screen
@@ -40,6 +44,7 @@ const int waterLevelPin = 35;
 const int sunlightPin = 25;
 const int soilMoisturePin = 32;
 const int tempHumidityPin = 33;
+const int bluetoothButtonPin = 13;
 //ESP32 Pins enabled in User_Setup.h of the TFT Library
 //#define TFT_MOSI 23 // In some display driver board, it might be written as "SDA" and so on.
 //#define TFT_SCLK 18
@@ -57,11 +62,15 @@ int dt=2000;
 int waterLevel;
 int lightLevel;
 int moistureLevel;
-float humidity;
-float temperature;
+float humidityLevel;
+float temperatureLevel;
 
 uint16_t  spr_width = 0;
 uint16_t  bg_color =0;
+//====================================================================================
+//                           Bluetooth Globals
+//====================================================================================
+int bluetoothPairing;
 //====================================================================================
 //                           LCD Screen Globals
 //====================================================================================
@@ -76,40 +85,50 @@ TFT_eSprite spr    = TFT_eSprite(&tft); // Sprite for meter reading
 // Font attached to this sketch
 #define AA_FONT_LARGE NotoSansBold36
 //====================================================================================
+//                          PNG Draw
+//====================================================================================
+// This next function will be called during decoding of the png file to
+// render each image line to the TFT.  If you use a different TFT library
+// you will need to adapt this function to suit.
+// Callback function to draw pixels to the display
+//====================================================================================
+void pngDraw(PNGDRAW *pDraw) {
+  uint16_t lineBuffer[MAX_IMAGE_WDITH];
+  png.getLineAsRGB565(pDraw, lineBuffer, PNG_RGB565_BIG_ENDIAN, 0xffffffff);
+  tft.pushImage(xpos, ypos + pDraw->y, pDraw->iWidth, 1, lineBuffer);
+}
+//====================================================================================
 //                           Automatic Water Pump Function
 //====================================================================================
 //Waters the planter when soil moisture is low
 //Shuts off water pump if water level is too low to avoid damage to the motor
 //Moisture values will need to be extracted from database for indivudual plants
 //====================================================================================
-void automaticWaterPump()
+void runWaterPump()
 {
   moistureLevel = analogRead(soilMoisturePin);
-  Serial.print("Moisture: ");
+  Serial.print("Moisture Level: ");
   Serial.print(moistureLevel);
   Serial.print('\n'); 
+  delay(500);
   waterLevel = analogRead(waterLevelPin);
   Serial.print("Water Level: ");
   Serial.print(waterLevel);
   Serial.print("\n");
-  while(moistureLevel > 2500){
-    waterLevel = analogRead(waterLevelPin);
-    Serial.print("Water Level: ");
-    Serial.print(waterLevel);
-    Serial.print("\n");
-    if(waterLevel == 0){
+  delay(2000);
+  while(moistureLevel >= 3000){
+   
+    if(waterLevel <= 1000){
       digitalWrite(waterPumpPin, HIGH);
       Serial.print("Motor ON\n ");
-      
       tft.fillScreen(TFT_RED);
       tft.setTextColor(TFT_WHITE, 0);
       tft.setTextDatum(MC_DATUM);
       tft.drawString("(Watering)", 120, 120 + 48, 2);
-      
-      delay(500);
+      delay(1000);
       digitalWrite(waterPumpPin, LOW);
       Serial.print("Motor OFF\n ");
-      
+
     }
     else{
       Serial.print("LOW WATER");
@@ -117,12 +136,17 @@ void automaticWaterPump()
       tft.setTextColor(TFT_WHITE, 0);
       tft.setTextDatum(MC_DATUM);
       tft.drawString("(LOW WATER)", 120, 120 + 48, 2);
-      delay(5000);
     }
     moistureLevel = analogRead(soilMoisturePin);
     Serial.print("Moisture: ");
     Serial.print(moistureLevel);
     Serial.print('\n'); 
+    delay(1000);
+    waterLevel = analogRead(waterLevelPin);
+    Serial.print("Water Level: ");
+    Serial.print(waterLevel);
+    Serial.print("\n");
+    
   }
 }
 //====================================================================================
@@ -132,9 +156,9 @@ void automaticWaterPump()
 //====================================================================================
 void getTemperature(){
 
-  temperature = (HT.readTemperature(true));
+  temperatureLevel = (HT.readTemperature(true));
   Serial.print("Temperature ");
-  Serial.print(temperature);
+  Serial.print(temperatureLevel);
   Serial.println(" F ");
   
   delay(1000);
@@ -146,9 +170,9 @@ void getTemperature(){
 //Measures the temperature reading from the DHT11 Sensor
 //====================================================================================
 void getHumidity(){
-  humidity = HT.readHumidity();
+  humidityLevel = HT.readHumidity();
   Serial.print("Humidity: ");
-  Serial.print(humidity);
+  Serial.print(humidityLevel);
   Serial.print('\n'); 
   delay(dt);
   delay(1000);
@@ -176,7 +200,7 @@ void getLightLevel()
     }
   Serial.print("Light: ");
   Serial.println(lightLevel);
-  delay(1000);
+
 }
 //====================================================================================
 //                          LCD DevScreen
@@ -195,8 +219,8 @@ void devScreen(){
      // Plot the label text
     tft.setTextColor(TFT_WHITE);
     tft.setTextDatum(MC_DATUM);
-    tft.drawString(String(temperature), 170, 76, 4);
-    tft.drawString(String(humidity), 170, 98, 4);
+    tft.drawString(String(temperatureLevel), 170, 76, 4);
+    tft.drawString(String(humidityLevel), 170, 98, 4);
     tft.drawString(String(lightLevel), 170, 122, 4);
     tft.drawString(String(waterLevel), 170, 146, 4);
     tft.drawString(String(moistureLevel), 170, 170, 4);
@@ -224,15 +248,18 @@ void displayHome(){
 //====================================================================================
 void displayTemperature(){
        // Plot the label text
-    tft.fillScreen(TFT_NAVY);
-    tft.setTextColor(TFT_WHITE, TFT_NAVY, 0);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString("(Temperature)", 120, 120 + 48, 2);
-
+    int16_t rc = png.openFLASH((uint8_t *)temperature, sizeof(temperature), pngDraw);
+    if (rc == PNG_SUCCESS) {
+    tft.startWrite();
+    uint32_t dt = millis();
+    rc = png.decode(NULL, 0);
+    tft.endWrite();  
+    }
     // Update the number at the centre of the dial
-    spr.setTextColor(TFT_WHITE, bg_color, true);
-    spr.drawNumber(temperature, spr_width/2, spr.fontHeight()/2);
-    spr.pushSprite(120 - spr_width / 2, 120 - spr.fontHeight() / 2);
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString(String((int)temperatureLevel), 100, 120, 8);
+    delay(2000);
 }
 //====================================================================================
 //                          LCD Humidity
@@ -241,15 +268,18 @@ void displayTemperature(){
 //====================================================================================
 void displayHumidity(){
        // Plot the label text
-    tft.fillScreen(TFT_NAVY);
-    tft.setTextColor(TFT_WHITE, TFT_NAVY, 0);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString("(Humidity)", 120, 120 + 48, 2);
-
+    int16_t rc = png.openFLASH((uint8_t *)humidity, sizeof(humidity), pngDraw);
+  if (rc == PNG_SUCCESS) {
+    tft.startWrite();
+    uint32_t dt = millis();
+    rc = png.decode(NULL, 0);
+    tft.endWrite();  
+  }
     // Update the number at the centre of the dial
-    spr.setTextColor(TFT_WHITE, bg_color, true);
-    spr.drawNumber(humidity, spr_width/2, spr.fontHeight()/2);
-    spr.pushSprite(120 - spr_width / 2, 120 - spr.fontHeight() / 2);
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString(String((int)humidityLevel), 100, 120, 8);
+    delay(2000);
 }
 //====================================================================================
 //                          LCD Sunlight
@@ -258,15 +288,18 @@ void displayHumidity(){
 //====================================================================================
 void displaySunlight(){
        // Plot the label text
-    tft.fillScreen(TFT_NAVY);
-    tft.setTextColor(TFT_WHITE, TFT_NAVY, 0);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString("(Sunlight)", 120, 120 + 48, 2);
-
+    int16_t rc = png.openFLASH((uint8_t *)light_exposure, sizeof(light_exposure), pngDraw);
+  if (rc == PNG_SUCCESS) {
+    tft.startWrite();
+    uint32_t dt = millis();
+    rc = png.decode(NULL, 0);
+    tft.endWrite();  
+  }
     // Update the number at the centre of the dial
-    spr.setTextColor(TFT_WHITE, bg_color, true);
-    spr.drawNumber(lightLevel, spr_width/2, spr.fontHeight()/2);
-    spr.pushSprite(120 - spr_width / 2, 120 - spr.fontHeight() / 2);
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString(String(lightLevel), 100, 120, 8);
+    delay(2000);
 }
 //====================================================================================
 //                          LCD Moisture
@@ -275,29 +308,20 @@ void displaySunlight(){
 //====================================================================================
 void displayMoisture(){
        // Plot the label text
-    tft.fillScreen(TFT_NAVY);
-    tft.setTextColor(TFT_WHITE, TFT_NAVY, 0);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString("(Moisture)", 120, 120 + 48, 2);
-
+    int16_t rc = png.openFLASH((uint8_t *)soil_moisture, sizeof(soil_moisture), pngDraw);
+  if (rc == PNG_SUCCESS) {
+    tft.startWrite();
+    uint32_t dt = millis();
+    rc = png.decode(NULL, 0);
+    tft.endWrite();  
+  }
     // Update the number at the centre of the dial
-    spr.setTextColor(TFT_WHITE, bg_color, true);
-    spr.drawNumber(moistureLevel, spr_width/2, spr.fontHeight()/2);
-    spr.pushSprite(120 - spr_width / 2, 120 - spr.fontHeight() / 2);
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString(String(moistureLevel), 100, 120, 8);
+    delay(2000);
 }
-//====================================================================================
-//                          PNG Draw
-//====================================================================================
-// This next function will be called during decoding of the png file to
-// render each image line to the TFT.  If you use a different TFT library
-// you will need to adapt this function to suit.
-// Callback function to draw pixels to the display
-//====================================================================================
-void pngDraw(PNGDRAW *pDraw) {
-  uint16_t lineBuffer[MAX_IMAGE_WDITH];
-  png.getLineAsRGB565(pDraw, lineBuffer, PNG_RGB565_BIG_ENDIAN, 0xffffffff);
-  tft.pushImage(xpos, ypos + pDraw->y, pDraw->iWidth, 1, lineBuffer);
-}
+
 //====================================================================================
 //                                    Setup
 //====================================================================================
@@ -318,7 +342,7 @@ void setup() {
     tft.setTextDatum(MC_DATUM);
     for(int i = 0; i < 101; i++){
       tft.drawString("Booting.."+String(i) + "%", 120, 120 + 48, 4);
-      delay(100);
+      delay(50);
     }
     }
 
@@ -339,13 +363,33 @@ void setup() {
   HT.begin();
   delay(1000);
 
+  //Bluetooth
+  pinMode(bluetoothButtonPin, INPUT);
+
 }
 
 void loop() {
   getTemperature();
+  displayTemperature();
+ 
   getHumidity();
+  displayHumidity();
+  
   getLightLevel();
-  automaticWaterPump();
+  displaySunlight();
+  
+  runWaterPump();
+  displayMoisture();
+  
   devScreen();
   delay(1000);
+
+bluetoothPairing = digitalRead(bluetoothButtonPin);
+
+  if(bluetoothPairing == HIGH){
+    Serial.print("Button pushed\n ");
+  }
+  else{
+    Serial.print("Button Off\n ");
+  }
 }
