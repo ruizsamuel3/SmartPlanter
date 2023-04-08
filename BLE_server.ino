@@ -32,9 +32,9 @@ void postData(){
   if(WiFi.status() == WL_CONNECTED){
     Serial.println("Getting ready to post");
     HTTPClient http;
-    http.begin("https://us-east-1.aws.data.mongodb-api.com/app/data-bbjek/endpoint/data/v1/action/insertOne");
+    http.begin();
     http.addHeader("Content-Type", "application/json");
-    http.addHeader("apiKey", "Pc1wgWw5hIsH0cqWen5qw2Qyoob69MPCI4ZCTKJq4rfOLznH6JQIs9St3oJ6TXUu");
+    http.addHeader();
     int httpResponseCode = http.POST(json);
     if(httpResponseCode == 200){
       Serial.println("Data sent");
